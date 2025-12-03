@@ -110,26 +110,49 @@ const callAPI = (url: string) =>
     return json;
   });
 
-const retryOnAuth = <A, R>(
-  effect: Effect.Effect<A, APIError, R>,
+const retryWithRecovery = <A, E, R, RA, RE, RR>(
+  effect: Effect.Effect<A, E, R>,
+  recoveryAction: Effect.Effect<RA, RE, RR>,
+  recoveryPredicate: (error: E) => boolean,
+  retryPredicate: (error: E) => boolean,
   maxRetries: number,
-): Effect.Effect<A, APIError, R | AuthToken | HttpClient.HttpClient> => {
-  const attempt = (retriesLeft: number): Effect.Effect<A, APIError, R | AuthToken | HttpClient.HttpClient> =>
+): Effect.Effect<A, E | RE, R | RR> => {
+  const attempt = (retriesLeft: number): Effect.Effect<A, E | RE, R | RR> =>
     effect.pipe(
-      Effect.catchTag("APIError", (error) => {
-        if (error.status === 401 && retriesLeft > 0) {
-          return renewToken.pipe(Effect.andThen(attempt(retriesLeft - 1)));
+      Effect.catchAll((e) => {
+        if (retriesLeft > 0 && retryPredicate(e) && recoveryPredicate(e)) {
+          return recoveryAction.pipe(Effect.andThen(attempt(retriesLeft - 1)));
         }
-        return Effect.fail(error);
+        if (retriesLeft > 0 && retryPredicate(e)) {
+          return attempt(maxRetries - 1);
+        }
+        return Effect.fail(e);
       }),
     );
-
   return attempt(maxRetries);
 };
 
-const callAPI1 = callAPI(API_1);
-const callAPI2 = retryOnAuth(callAPI(API_2), 3);
-const callAPI3 = callAPI(API_3);
+const callAPI1 = retryWithRecovery(
+  callAPI(API_1),
+  renewToken,
+  (e) => e.status === 401,
+  (e) => e.status === 401,
+  3,
+);
+const callAPI2 = retryWithRecovery(
+  callAPI(API_2),
+  renewToken,
+  (e) => e.status === 401,
+  () => true,
+  3,
+);
+const callAPI3 = retryWithRecovery(
+  callAPI(API_3),
+  renewToken,
+  (e) => e.status === 401,
+  () => true,
+  3,
+);
 
 const callAPIs = callAPI1.pipe(Effect.andThen(callAPI2), Effect.andThen(callAPI3));
 
